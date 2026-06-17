@@ -1,0 +1,17 @@
+# Configuración de DBHub — conexión al ERP por SQL Server.
+# La credencial NO se guarda aquí: se lee de la variable PSI_DSN del .env.
+
+[[sources]]
+id = "psi"
+description = "ERP SistemaclientePSI (SQL Server, producción). Contiene clientes, órdenes y datos del negocio."
+dsn = "${PSI_DSN}"
+connection_timeout = 30
+query_timeout = 30
+
+# El tool execute_sql se expone en modo SOLO LECTURA.
+# Bloquea INSERT/UPDATE/DELETE: Qwen puede consultar y reportar, pero nunca modificar el ERP.
+[[tools]]
+name = "execute_sql"
+source = "psi"
+readonly = true
+max_rows = 1000

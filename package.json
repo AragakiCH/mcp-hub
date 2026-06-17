@@ -2,9 +2,10 @@
   "name": "mcp-hub",
   "version": "1.0.0",
   "description": "Hub centralizador de MCPs para Qwen",
-  "main": "src/index.ts",
+  "main": "src/server.ts",
   "scripts": {
-    "start": "ts-node src/index.ts"
+    "start": "ts-node src/server.ts",
+    "demo": "ts-node src/index.ts"
   },
   "keywords": [],
   "author": "",
@@ -12,9 +13,11 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "dotenv": "^17.4.2",
+    "express": "^5.2.1",
     "ollama": "^0.6.3"
   },
   "devDependencies": {
+    "@types/express": "^5.0.0",
     "@types/node": "^25.9.3",
     "ts-node": "^10.9.2",
     "typescript": "^6.0.3"
