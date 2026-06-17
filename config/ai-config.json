@@ -1,0 +1,9 @@
+{
+    "Ollama": {
+        "BaseUrl": "http://5.78.193.124:11434",
+        "Model": "qwen2.5:14b",
+        "MaxTokens": 1200,
+        "Temperature": 0.2
+    }
+}
+
