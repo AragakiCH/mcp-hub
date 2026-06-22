@@ -11,7 +11,7 @@ import { runAgent, extractText, type AgentDeps, type OllamaTool, type ToolExecut
 
 const PORT = Number(process.env.PORT ?? 3000);
 // Carpeta a la que el Filesystem MCP tendrá acceso (en TU servidor)
-const FS_ROOT = process.env.FS_ROOT ?? 'D:/proyecto psi/mcp-hub';
+const FS_ROOT = process.env.FS_ROOT ?? 'D:/Proyecto_psi/mcp-hub';
 // Ruta absoluta al config de DBHub (define la conexión al ERP en modo read-only)
 const DBHUB_CONFIG = path.resolve(process.cwd(), 'dbhub.toml');
 
@@ -41,23 +41,40 @@ async function buildTooling(): Promise<AgentDeps> {
     console.log(`✅ ${internalTools.length} herramientas internas (test/OPC UA/web).`);
 
     // ---- 2. MCPs externos por stdio ----
-    const externals = [
+    // Cada MCP tiene un `key` y un `enabled` por defecto. Puedes activar/desactivar
+    // cualquiera SIN tocar código, poniendo en el .env:  MCP_<KEY>=on  o  MCP_<KEY>=off
+    // Ej.: MCP_MEMORY=on   MCP_FILESYSTEM=off
+    const allExternals = [
         // Búsqueda web
-        { command: 'npx', args: ['-y', 'duckduckgo-mcp-server'], label: 'DuckDuckGo' },
+        { key: 'DUCKDUCKGO', enabled: true,  command: 'npx', args: ['-y', 'duckduckgo-mcp-server'], label: 'DuckDuckGo' },
         // Acceso a archivos del servidor
-        { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', FS_ROOT], label: 'Filesystem' },
+        { key: 'FILESYSTEM', enabled: true,  command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', FS_ROOT], label: 'Filesystem' },
         // ERP por SQL Server, SOLO LECTURA (config en dbhub.toml)
-        { command: 'npx', args: ['-y', '@bytebase/dbhub', '--transport', 'stdio', '--config', DBHUB_CONFIG], label: 'DBHub (ERP SQL Server · read-only)' },
-        // Razonamiento paso a paso (estabiliza a Qwen en cadenas largas)
-        { command: 'npx', args: ['-y', '@modelcontextprotocol/server-sequential-thinking'], label: 'Sequential Thinking' },
-        // Memoria persistente (grafo de conocimiento)
-        { command: 'npx', args: ['-y', '@modelcontextprotocol/server-memory'], label: 'Memory' }
+        { key: 'DBHUB',      enabled: true,  command: 'npx', args: ['-y', '@bytebase/dbhub', '--transport', 'stdio', '--config', DBHUB_CONFIG], label: 'DBHub (ERP SQL Server · read-only)' },
+        // Razonamiento paso a paso (estabiliza a Qwen en cadenas largas). +1 tool.
+        { key: 'SEQUENTIAL', enabled: false, command: 'npx', args: ['-y', '@modelcontextprotocol/server-sequential-thinking'], label: 'Sequential Thinking' },
+        // Memoria persistente (grafo de conocimiento). OJO: aporta 9 tools.
+        { key: 'MEMORY',     enabled: false, command: 'npx', args: ['-y', '@modelcontextprotocol/server-memory'], label: 'Memory' }
 
         // --- Opcionales (requieren Python + uv instalados en el servidor) ---
-        // { command: 'uvx', args: ['mcp-server-fetch'], label: 'Fetch' },
-        // { command: 'uvx', args: ['mcp-server-git', '--repository', FS_ROOT], label: 'Git' },
-        // { command: 'uvx', args: ['mcp-server-time'], label: 'Time' }
+        // { key: 'FETCH', enabled: false, command: 'uvx', args: ['mcp-server-fetch'], label: 'Fetch' },
+        // { key: 'GIT',   enabled: false, command: 'uvx', args: ['mcp-server-git', '--repository', FS_ROOT], label: 'Git' },
+        // { key: 'TIME',  enabled: false, command: 'uvx', args: ['mcp-server-time'], label: 'Time' }
     ];
+
+    // El .env manda sobre el valor por defecto: MCP_<KEY>=off/false/0/no lo apaga; on/true/1/yes lo enciende.
+    const isEnabled = (key: string, def: boolean): boolean => {
+        const v = process.env[`MCP_${key}`]?.toLowerCase().trim();
+        if (!v) return def;
+        if (['off', 'false', '0', 'no'].includes(v)) return false;
+        if (['on', 'true', '1', 'yes'].includes(v)) return true;
+        return def;
+    };
+
+    const externals = allExternals.filter((e) => isEnabled(e.key, e.enabled));
+    const apagados = allExternals.filter((e) => !isEnabled(e.key, e.enabled)).map((e) => e.label);
+    console.log(`🔌 MCPs externos activos: ${externals.map((e) => e.label).join(', ') || '(ninguno)'}`);
+    if (apagados.length) console.log(`💤 MCPs desactivados: ${apagados.join(', ')}`);
 
     for (const ext of externals) {
         try {

@@ -24,6 +24,25 @@ export interface AgentDeps {
 const MAX_ITERATIONS = 8;
 
 /**
+ * System prompt: le explica a Qwen quién es y, sobre todo, que SÍ tiene
+ * acceso real a las herramientas (MCPs). Sin esto el modelo responde
+ * "no tengo acceso a bases de datos" en vez de usar execute_sql.
+ */
+const SYSTEM_PROMPT = `Eres el asistente del MCP Hub de la empresa. Tienes acceso REAL a herramientas (tools) y DEBES usarlas para responder; nunca digas que no tienes acceso a archivos, internet o bases de datos: úsalos llamando a la herramienta correspondiente.
+
+Base de datos (tool execute_sql):
+- Motor: Microsoft SQL Server. Usa SIEMPRE sintaxis T-SQL (por ejemplo TOP N en vez de LIMIT, INFORMATION_SCHEMA para explorar el esquema).
+- Base de datos activa: SistemaclientePSI. La conexión ya está hecha; NO uses placeholders como <database_name>, <your_database> ni <table>: escribe nombres reales.
+- Es SOLO LECTURA: solo SELECT. Nunca generes INSERT, UPDATE, DELETE, DROP ni ALTER.
+- Tablas disponibles: usuarios, cliente, recursos, propuesta_tecnica, comparacion_prov, anteproyecto, proyecto, servicios, items, Proveedores, tareas_proyectos.
+- Para listar tablas usa: SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE'.
+- Para ver columnas de una tabla usa: SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'nombre_tabla'.
+
+Reglas generales:
+- Cuando una consulta SQL no devuelva filas, NO inventes ni divagues: revisa tu consulta y reintenta con una correcta antes de rendirte.
+- Después de ejecutar herramientas, responde en español, de forma clara y concreta, usando los datos obtenidos.`;
+
+/**
  * Extrae texto de forma segura de cualquier resultado MCP / interno.
  * Soporta { content: [{type:'text', text}] }, strings y objetos arbitrarios.
  */
@@ -50,7 +69,13 @@ export async function runAgent(
     deps: AgentDeps,
     history: Message[] = []
 ): Promise<string> {
-    const messages: Message[] = [...history, { role: 'user', content: userMessage }];
+    // Inyectamos el system prompt solo si el historial no trae ya uno
+    const hasSystem = history.some((m) => m.role === 'system');
+    const messages: Message[] = [
+        ...(hasSystem ? [] : [{ role: 'system', content: SYSTEM_PROMPT } as Message]),
+        ...history,
+        { role: 'user', content: userMessage }
+    ];
 
     for (let i = 0; i < MAX_ITERATIONS; i++) {
         const response = await ollamaClient.chat({

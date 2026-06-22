@@ -36,7 +36,7 @@ async function main() {
     const fsClient = await spawnExternalMCP("npx", [
         "-y", 
         "@modelcontextprotocol/server-filesystem", 
-        "D:/proyecto psi/mcp-hub" // Le damos acceso estrictamente a esta carpeta
+        "D:/Proyecto_psi/mcp-hub" // Le damos acceso estrictamente a esta carpeta
     ]);
     const fsToolsResponse = await fsClient.listTools();
     const fsTools = fsToolsResponse.tools.map(tool => ({
@@ -51,7 +51,7 @@ async function main() {
 
     // Prueba de Búsqueda Web: Le pedimos a Qwen que investigue en internet
 // Prueba de Filesystem: Le pedimos a Qwen que explore tu disco duro
-    const prompt = "Usa la herramienta para listar los archivos del directorio D:/proyecto psi/mcp-hub y dime exactamente qué archivos ves.";    
+    const prompt = "Usa la herramienta para listar los archivos del directorio D:/Proyecto_psi/mcp-hub y dime exactamente qué archivos ves.";
     console.log(`\n🗣️ Usuario: ${prompt}`);
     
     try {
