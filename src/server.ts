@@ -15,6 +15,8 @@ const FS_ROOT = process.env.FS_ROOT ?? 'D:/Proyecto_psi/mcp-hub';
 // Ruta absoluta al config de DBHub (define la conexión al ERP en modo read-only)
 const DBHUB_CONFIG = path.resolve(process.cwd(), 'dbhub.toml');
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 // Guardamos los clientes MCP para poder cerrarlos al apagar
 const mcpClients: Client[] = [];
 
@@ -45,8 +47,10 @@ async function buildTooling(): Promise<AgentDeps> {
     // cualquiera SIN tocar código, poniendo en el .env:  MCP_<KEY>=on  o  MCP_<KEY>=off
     // Ej.: MCP_MEMORY=on   MCP_FILESYSTEM=off
     const allExternals = [
-        // Búsqueda web
-        { key: 'DUCKDUCKGO', enabled: true,  command: 'npx', args: ['-y', 'duckduckgo-mcp-server'], label: 'DuckDuckGo' },
+        // Búsqueda web por API (fiable desde servidor). Requiere TAVILY_API_KEY en .env.
+        { key: 'TAVILY',     enabled: true,  command: 'npx', args: ['-y', 'tavily-mcp@latest'], label: 'Tavily (búsqueda web)' },
+        // DuckDuckGo (scraping): bloqueado desde IP de servidor. Apagado; reemplazado por Tavily.
+        { key: 'DUCKDUCKGO', enabled: false, command: 'npx', args: ['-y', 'duckduckgo-mcp-server'], label: 'DuckDuckGo', retries: 3, retryDelayMs: 3000 },
         // Acceso a archivos del servidor
         { key: 'FILESYSTEM', enabled: true,  command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', FS_ROOT], label: 'Filesystem' },
         // ERP por SQL Server, SOLO LECTURA (config en dbhub.toml)
@@ -87,12 +91,34 @@ async function buildTooling(): Promise<AgentDeps> {
                     type: 'function',
                     function: { name: t.name, description: t.description ?? '', parameters: t.inputSchema }
                 });
-                registry.set(t.name, async (args) =>
-                    extractText(await client.callTool({
-                        name: t.name,
-                        arguments: (args ?? {}) as Record<string, unknown>
-                    }))
-                );
+                const maxAttempts = ((ext as any).retries ?? 0) + 1;
+                const retryDelayMs = (ext as any).retryDelayMs ?? 2500;
+                registry.set(t.name, async (args) => {
+                    let lastErr: any;
+                    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                        try {
+                            const text = extractText(await client.callTool({
+                                name: t.name,
+                                arguments: (args ?? {}) as Record<string, unknown>
+                            }));
+                            // Algunos MCP devuelven el bloqueo como texto en vez de lanzar
+                            if (attempt < maxAttempts && /anomaly|too quickly|rate.?limit/i.test(text)) {
+                                console.log(`   ↻ ${t.name} bloqueado (intento ${attempt}/${maxAttempts}); reintento en ${retryDelayMs * attempt}ms...`);
+                                await sleep(retryDelayMs * attempt);
+                                continue;
+                            }
+                            return text;
+                        } catch (err: any) {
+                            lastErr = err;
+                            if (attempt < maxAttempts) {
+                                console.log(`   ↻ ${t.name} falló (intento ${attempt}/${maxAttempts}); reintento en ${retryDelayMs * attempt}ms...`);
+                                await sleep(retryDelayMs * attempt);
+                                continue;
+                            }
+                        }
+                    }
+                    throw lastErr;
+                });
             }
             console.log(`✅ ${list.tools.length} herramientas de ${ext.label}.`);
         } catch (err: any) {

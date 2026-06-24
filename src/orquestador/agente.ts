@@ -60,6 +60,69 @@ export function extractText(result: any): string {
 }
 
 /**
+ * Extrae el primer objeto JSON balanceado de un texto a partir de un índice.
+ * Maneja llaves anidadas y comillas escapadas. Devuelve el objeto o null.
+ */
+function extractJsonObject(text: string, fromIndex = 0): any | null {
+    const start = text.indexOf('{', fromIndex);
+    if (start === -1) return null;
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    for (let i = start; i < text.length; i++) {
+        const ch = text[i];
+        if (escape) { escape = false; continue; }
+        if (ch === '\\') { escape = true; continue; }
+        if (ch === '"') { inString = !inString; continue; }
+        if (inString) continue;
+        if (ch === '{') depth++;
+        else if (ch === '}') {
+            depth--;
+            if (depth === 0) {
+                try { return JSON.parse(text.slice(start, i + 1)); } catch { return null; }
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * Rescata una llamada a herramienta que qwen2.5 "fugó" como texto plano
+ * (ej: `_icall_duckduckgo_web_search = {"query": "..."}`) en vez de usar el
+ * canal estructurado tool_calls. Busca un nombre de herramienta conocido en el
+ * texto y el JSON de argumentos más cercano. Devuelve { name, args } o null.
+ */
+function parseLeakedToolCall(
+    content: string,
+    registry: Map<string, ToolExecutor>
+): { name: string; args: any } | null {
+    if (!content) return null;
+
+    // El nombre de herramienta registrado que aparezca primero en el texto
+    let best: { name: string; index: number } | null = null;
+    for (const name of registry.keys()) {
+        const idx = content.indexOf(name);
+        if (idx !== -1 && (best === null || idx < best.index)) {
+            best = { name, index: idx };
+        }
+    }
+    if (!best) return null;
+
+    // JSON inmediatamente después del nombre (lo más común)
+    let obj = extractJsonObject(content, best.index);
+    // Si no hubo, probamos cualquier JSON del texto
+    if (!obj) obj = extractJsonObject(content, 0);
+    if (!obj || typeof obj !== 'object') return null;
+
+    // Formato { name, arguments } o el JSON ya son los argumentos directos
+    if (obj.arguments && typeof obj.arguments === 'object') {
+        const name = typeof obj.name === 'string' && registry.has(obj.name) ? obj.name : best.name;
+        return { name, args: obj.arguments };
+    }
+    return { name: best.name, args: obj };
+}
+
+/**
  * Bucle de agente multi-paso.
  * Sigue llamando a Qwen mientras pida herramientas, hasta que dé una
  * respuesta final en lenguaje natural (o se agote MAX_ITERATIONS).
@@ -77,6 +140,11 @@ export async function runAgent(
         { role: 'user', content: userMessage }
     ];
 
+    // Firmas (nombre+args) de llamadas que ya fallaron, para que Qwen no
+    // repita en cadena la misma herramienta con los mismos argumentos.
+    const triedAndFailed = new Set<string>();
+    const looksLikeError = (t: string) => /^Error\b|anomaly|too quickly|rate.?limit/i.test(t);
+
     for (let i = 0; i < MAX_ITERATIONS; i++) {
         const response = await ollamaClient.chat({
             model: aiConfig.Ollama.Model,
@@ -92,20 +160,44 @@ export async function runAgent(
 
         const toolCalls = response.message.tool_calls;
 
-        // Sin tool_calls => Qwen ya tiene respuesta final
+        // Sin tool_calls estructurados => puede ser la respuesta final, O una
+        // llamada que qwen2.5 "fugó" como texto. Intentamos rescatarla.
         if (!toolCalls || toolCalls.length === 0) {
-            return response.message.content ?? '';
+            const leaked = parseLeakedToolCall(response.message.content ?? '', deps.registry);
+            if (!leaked) {
+                return response.message.content ?? '';
+            }
+
+            console.log(`🩹 Paso ${i + 1}: Qwen fugó la llamada como texto; rescatando "${leaked.name}".`);
+            const executor = deps.registry.get(leaked.name)!;
+            let resultText: string;
+            try {
+                console.log(`   → Ejecutando ${leaked.name}`);
+                resultText = await executor(leaked.args);
+            } catch (err: any) {
+                resultText = `Error ejecutando "${leaked.name}": ${err?.message ?? err}`;
+            }
+
+            const toolMessage: Message = { role: 'tool', content: resultText };
+            (toolMessage as any).tool_name = leaked.name;
+            messages.push(toolMessage);
+            continue; // Volvemos a pedirle a Qwen que redacte con el resultado real
         }
 
         console.log(`🛠️  Paso ${i + 1}: Qwen pidió ${toolCalls.length} herramienta(s).`);
 
         for (const call of toolCalls) {
             const name = call.function.name;
+            const sig = name + ':' + JSON.stringify(call.function.arguments ?? {});
             const executor = deps.registry.get(name);
             let resultText: string;
 
             if (!executor) {
                 resultText = `Error: la herramienta "${name}" no existe en el hub.`;
+            } else if (triedAndFailed.has(sig)) {
+                // Ya falló antes con estos mismos argumentos: cortamos el ciclo.
+                console.log(`   ⏭️  ${name} ya falló con esos argumentos; no se reintenta.`);
+                resultText = `Ya intentaste "${name}" con esos mismos argumentos y falló. No la repitas: responde al usuario con la información que ya tengas, o dile claramente que esa herramienta no está disponible en este momento.`;
             } else {
                 try {
                     console.log(`   → Ejecutando ${name}`);
@@ -113,6 +205,7 @@ export async function runAgent(
                 } catch (err: any) {
                     resultText = `Error ejecutando "${name}": ${err?.message ?? err}`;
                 }
+                if (looksLikeError(resultText)) triedAndFailed.add(sig);
             }
 
             // Devolvemos el resultado a Qwen; tool_name ayuda al modelo a no confundirse
